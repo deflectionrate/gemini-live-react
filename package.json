@@ -1,0 +1,16 @@
+{
+  "name": "gemini-live-react-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=packages/react",
+    "dev": "npm run dev --workspace=packages/react",
+    "lint": "npm run lint --workspace=packages/react"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}

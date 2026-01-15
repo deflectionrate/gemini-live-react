@@ -1,0 +1,48 @@
+{
+  "name": "gemini-live-react",
+  "version": "0.1.0",
+  "description": "React hook for Google Gemini Live API with real-time bidirectional voice streaming",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "gemini",
+    "google",
+    "voice",
+    "audio",
+    "real-time",
+    "streaming",
+    "react",
+    "hook",
+    "speech",
+    "ai",
+    "live-api"
+  ],
+  "author": "deflectionrate",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/deflectionrate/gemini-live-react"
+  },
+  "homepage": "https://github.com/deflectionrate/gemini-live-react#readme",
+  "bugs": {
+    "url": "https://github.com/deflectionrate/gemini-live-react/issues"
+  },
+  "peerDependencies": {
+    "react": ">=17.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "react": "^18.2.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0"
+  }
+}
