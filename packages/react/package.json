@@ -37,7 +37,13 @@
     "url": "https://github.com/deflectionrate/gemini-live-react/issues"
   },
   "peerDependencies": {
-    "react": ">=17.0.0"
+    "react": ">=17.0.0",
+    "@ricky0123/vad-web": ">=0.0.7"
+  },
+  "peerDependenciesMeta": {
+    "@ricky0123/vad-web": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/react": "^18.2.0",

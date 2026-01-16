@@ -1,4 +1,14 @@
 /**
+ * Debug log levels for categorizing log messages
+ */
+export type DebugLevel = 'info' | 'warn' | 'error' | 'verbose';
+
+/**
+ * Debug callback function signature
+ */
+export type DebugCallback = (level: DebugLevel, message: string, data?: unknown) => void;
+
+/**
  * A transcript entry representing either user speech or AI response
  */
 export interface Transcript {
@@ -11,6 +21,42 @@ export interface Transcript {
   /** When this transcript was created */
   timestamp: Date;
 }
+
+/**
+ * Definition of a tool that can be called by the AI
+ */
+export interface ToolDefinition {
+  /** Unique name for this tool */
+  name: string;
+  /** Description of what this tool does (helps AI decide when to use it) */
+  description: string;
+  /**
+   * JSON Schema for the tool's parameters
+   * @example { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] }
+   */
+  parameters?: Record<string, unknown>;
+}
+
+/**
+ * A tool call request from the AI
+ */
+export interface ToolCall {
+  /** Unique ID for this tool call (use when sending results back) */
+  id: string;
+  /** Name of the tool being called */
+  name: string;
+  /** Arguments passed to the tool */
+  args: Record<string, unknown>;
+}
+
+/**
+ * Callback function signature for handling tool calls
+ * Return the result to send back to the AI
+ */
+export type ToolCallHandler = (
+  toolName: string,
+  args: Record<string, unknown>
+) => Promise<unknown> | unknown;
 
 /**
  * Configuration options for useGeminiLive hook
@@ -62,7 +108,71 @@ export interface UseGeminiLiveOptions {
    * @default 1500
    */
   transcriptDebounceMs?: number;
+
+  /**
+   * Enable debug logging to help diagnose issues
+   * - true: logs to console
+   * - DebugCallback: custom logging function
+   * @default false
+   */
+  debug?: boolean | DebugCallback;
+
+  /**
+   * Reconnection configuration
+   */
+  reconnection?: {
+    /** Maximum number of reconnection attempts @default 5 */
+    maxAttempts?: number;
+    /** Initial delay in ms before first reconnection @default 1000 */
+    initialDelay?: number;
+    /** Maximum delay in ms between reconnections @default 10000 */
+    maxDelay?: number;
+    /** Multiplier for exponential backoff @default 2 */
+    backoffFactor?: number;
+  };
+
+  /**
+   * Tools/functions that the AI can call
+   * Tool definitions are forwarded to Gemini via the proxy
+   */
+  tools?: ToolDefinition[];
+
+  /**
+   * Callback fired when the AI requests a tool call
+   * Return the result to send back to the AI
+   */
+  onToolCall?: ToolCallHandler;
+
+  /**
+   * Enable Voice Activity Detection
+   * Only sends audio when user is speaking, reducing bandwidth
+   * @default false
+   */
+  vad?: boolean;
+
+  /**
+   * VAD configuration options
+   */
+  vadOptions?: {
+    /** Speech probability threshold (0-1) @default 0.5 */
+    threshold?: number;
+    /** Minimum speech duration in ms before triggering @default 250 */
+    minSpeechDuration?: number;
+    /** Duration of silence before ending speech @default 300 */
+    silenceDuration?: number;
+  };
 }
+
+/**
+ * Connection state machine states
+ */
+export type ConnectionState =
+  | 'idle'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'error'
+  | 'disconnected';
 
 /**
  * Return value from useGeminiLive hook
@@ -73,6 +183,12 @@ export interface UseGeminiLiveReturn {
 
   /** Whether currently attempting to connect */
   isConnecting: boolean;
+
+  /**
+   * Unified connection state machine
+   * Provides more granular state than isConnected/isConnecting
+   */
+  connectionState: ConnectionState;
 
   /** Whether the AI is currently speaking (audio playing) */
   isSpeaking: boolean;
@@ -117,6 +233,19 @@ export interface UseGeminiLiveReturn {
 
   /** Clear all transcript entries */
   clearTranscripts: () => void;
+
+  /**
+   * Send a tool result back to the AI
+   * @param toolCallId - The ID from the tool call
+   * @param result - The result to send back
+   */
+  sendToolResult: (toolCallId: string, result: unknown) => void;
+
+  /**
+   * Whether the user is currently speaking (VAD detected voice activity)
+   * Only available when vad: true
+   */
+  isUserSpeaking: boolean;
 }
 
 /**
@@ -153,13 +282,16 @@ export interface ProxyMessage {
   query?: string;
   found?: boolean;
   answer?: string;
+  toolCallId?: string;
+  toolName?: string;
+  args?: Record<string, unknown>;
 }
 
 /**
  * Message types sent from client to proxy
  * @internal
  */
-export type ClientMessageType = 'frame' | 'audio' | 'text';
+export type ClientMessageType = 'frame' | 'audio' | 'text' | 'tool_result' | 'setup_tools';
 
 /**
  * Message from client to proxy
@@ -170,4 +302,7 @@ export interface ClientMessage {
   data?: string;
   mimeType?: string;
   text?: string;
+  toolCallId?: string;
+  result?: unknown;
+  tools?: ToolDefinition[];
 }

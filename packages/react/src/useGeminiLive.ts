@@ -1,9 +1,12 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import type {
   Transcript,
   UseGeminiLiveOptions,
   UseGeminiLiveReturn,
   ProxyMessage,
+  ConnectionState,
+  DebugLevel,
+  DebugCallback,
 } from './types';
 
 /**
@@ -40,25 +43,69 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
     onConnectionChange,
     minBufferMs = 200,
     transcriptDebounceMs = 1500,
+    debug = false,
+    reconnection,
+    tools,
+    onToolCall,
+    vad = false,
+    vadOptions,
   } = options;
 
-  const [isConnected, setIsConnected] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
+  // Reconnection config with defaults
+  const maxReconnectAttempts = reconnection?.maxAttempts ?? 5;
+  const initialReconnectDelay = reconnection?.initialDelay ?? 1000;
+  const maxReconnectDelay = reconnection?.maxDelay ?? 10000;
+  const reconnectBackoffFactor = reconnection?.backoffFactor ?? 2;
+
+  // VAD config with defaults
+  const vadThreshold = vadOptions?.threshold ?? 0.5;
+  const vadMinSpeechDuration = vadOptions?.minSpeechDuration ?? 250;
+  const vadSilenceDuration = vadOptions?.silenceDuration ?? 300;
+
+  // Debug logging helper
+  const log = useCallback(
+    (level: DebugLevel, message: string, data?: unknown) => {
+      if (!debug) return;
+      if (typeof debug === 'function') {
+        (debug as DebugCallback)(level, message, data);
+      } else {
+        const prefix = `[gemini-live] [${level}]`;
+        if (data !== undefined) {
+          console.log(prefix, message, data);
+        } else {
+          console.log(prefix, message);
+        }
+      }
+    },
+    [debug]
+  );
+
+  // Connection state machine - single source of truth
+  const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
+
+  // Computed backwards-compatible booleans
+  const isConnected = connectionState === 'connected';
+  const isConnecting = connectionState === 'connecting' || connectionState === 'reconnecting';
+
   const [error, setError] = useState<string | null>(null);
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const [streamingUserText, setStreamingUserText] = useState<string | null>(null);
+  const [isUserSpeaking, setIsUserSpeaking] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectAttemptsRef = useRef(0);
-  const maxReconnectAttempts = 5;
-  const reconnectDelayRef = useRef(1000);
+  const reconnectDelayRef = useRef(initialReconnectDelay);
   const sessionHandleRef = useRef<string | null>(null);
+
+  // VAD refs
+  const vadRef = useRef<unknown>(null);
+  const vadAudioContextRef = useRef<AudioContext | null>(null);
 
   // Transcript accumulation - buffer chunks before creating transcript entries
   const inputTranscriptBufferRef = useRef<string>('');
@@ -289,12 +336,18 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
     }
   }, []);
 
+  // Track if user is speaking for VAD-controlled audio sending
+  const isUserSpeakingRef = useRef(false);
+
   /**
    * Start microphone capture (16kHz input for Gemini).
    * Uses AudioWorklet for proper Float32 to Int16 PCM conversion.
+   * Optionally uses VAD to only send audio when user is speaking.
    */
   const startMicCapture = useCallback(async () => {
     try {
+      log('info', 'Starting microphone capture', { vad });
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: 16000,
@@ -354,6 +407,9 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
 
       worklet.port.onmessage = (event) => {
         if (isMuted) return;
+        // If VAD is enabled, only send audio when user is speaking
+        if (vad && !isUserSpeakingRef.current) return;
+
         if (socketRef.current?.readyState === WebSocket.OPEN) {
           // Convert to base64 in main thread where btoa is available
           const bytes = new Uint8Array(event.data.audioBuffer);
@@ -375,16 +431,67 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
 
       source.connect(worklet);
       // Don't connect to destination to avoid feedback
+
+      // Initialize VAD if enabled
+      if (vad) {
+        try {
+          // Dynamically import VAD library (optional dependency)
+          const vadModule = await import('@ricky0123/vad-web');
+          log('info', 'Initializing VAD', { threshold: vadThreshold });
+
+          const micVAD = await vadModule.MicVAD.new({
+            stream,
+            positiveSpeechThreshold: vadThreshold,
+            minSpeechFrames: Math.ceil(vadMinSpeechDuration / 32), // ~32ms per frame
+            redemptionFrames: Math.ceil(vadSilenceDuration / 32),
+            onSpeechStart: () => {
+              log('verbose', 'VAD: Speech started');
+              isUserSpeakingRef.current = true;
+              setIsUserSpeaking(true);
+            },
+            onSpeechEnd: () => {
+              log('verbose', 'VAD: Speech ended');
+              isUserSpeakingRef.current = false;
+              setIsUserSpeaking(false);
+            },
+          });
+
+          vadRef.current = micVAD;
+          micVAD.start();
+          log('info', 'VAD started');
+        } catch (vadErr) {
+          log('warn', 'VAD initialization failed (is @ricky0123/vad-web installed?)', {
+            error: vadErr,
+          });
+          // Continue without VAD - audio will be sent continuously
+        }
+      }
     } catch (err) {
       console.error('Failed to start microphone:', err);
+      log('error', 'Failed to start microphone', { error: err });
       const errorMsg = 'Failed to access microphone';
       setError(errorMsg);
       onError?.(errorMsg);
     }
-  }, [isMuted, onError]);
+  }, [isMuted, onError, vad, vadThreshold, vadMinSpeechDuration, vadSilenceDuration, log]);
 
   /** Stop microphone capture */
   const stopMicCapture = useCallback(() => {
+    log('verbose', 'Stopping microphone capture');
+
+    // Stop VAD if running
+    if (vadRef.current) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (vadRef.current as any).destroy?.();
+      } catch {
+        // Ignore VAD cleanup errors
+      }
+      vadRef.current = null;
+      isUserSpeakingRef.current = false;
+      setIsUserSpeaking(false);
+    }
+
     if (micStreamRef.current) {
       micStreamRef.current.getTracks().forEach((track) => track.stop());
       micStreamRef.current = null;
@@ -397,7 +504,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
       inputContextRef.current.close();
       inputContextRef.current = null;
     }
-  }, []);
+  }, [log]);
 
   /**
    * Add a transcript entry and call the onTranscript callback
@@ -422,10 +529,12 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   const connect = useCallback(
     async (videoElement?: HTMLVideoElement) => {
       if (socketRef.current?.readyState === WebSocket.OPEN) {
+        log('verbose', 'Already connected, skipping');
         return;
       }
 
-      setIsConnecting(true);
+      log('info', 'Connecting to proxy', { proxyUrl, sessionId });
+      setConnectionState('connecting');
       setError(null);
 
       if (videoElement) {
@@ -446,17 +555,31 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
         socketRef.current = socket;
 
         socket.onopen = () => {
+          log('info', 'WebSocket opened');
           reconnectAttemptsRef.current = 0;
+
+          // Send tool definitions to proxy if configured
+          if (tools && tools.length > 0) {
+            log('info', 'Sending tool definitions', { tools });
+            socket.send(
+              JSON.stringify({
+                type: 'setup_tools',
+                tools,
+              })
+            );
+          }
         };
 
         socket.onmessage = (event) => {
           try {
             const data: ProxyMessage = JSON.parse(event.data);
 
+            log('verbose', 'Received message', { type: data.type });
+
             switch (data.type) {
               case 'setup_complete':
-                setIsConnecting(false);
-                setIsConnected(true);
+                log('info', 'Setup complete, starting audio capture');
+                setConnectionState('connected');
                 onConnectionChange?.(true);
                 if (videoRef.current) {
                   startFrameCapture();
@@ -464,6 +587,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
                 startMicCapture();
                 // Send welcome message to trigger AI greeting
                 if (welcomeMessage && socketRef.current?.readyState === WebSocket.OPEN) {
+                  log('verbose', 'Sending welcome message', { welcomeMessage });
                   socketRef.current.send(
                     JSON.stringify({
                       type: 'text',
@@ -533,15 +657,59 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
 
               case 'error':
                 const errorMsg = data.message ?? 'Unknown error';
+                log('error', 'Received error', { message: errorMsg });
                 setError(errorMsg);
+                setConnectionState('error');
                 onError?.(errorMsg);
                 break;
 
               case 'disconnected':
-                setIsConnected(false);
+                log('info', 'Server disconnected', { reason: data.reason });
+                setConnectionState('disconnected');
                 onConnectionChange?.(false);
                 stopFrameCapture();
                 stopMicCapture();
+                break;
+
+              case 'tool_call':
+                // Handle tool call from AI
+                if (data.toolCallId && data.toolName && onToolCall) {
+                  log('info', 'Received tool call', {
+                    id: data.toolCallId,
+                    name: data.toolName,
+                    args: data.args,
+                  });
+                  const args = data.args ?? {};
+                  // Call the handler and send result back
+                  Promise.resolve(onToolCall(data.toolName, args))
+                    .then((result) => {
+                      if (socketRef.current?.readyState === WebSocket.OPEN) {
+                        log('info', 'Sending tool result', {
+                          id: data.toolCallId,
+                          result,
+                        });
+                        socketRef.current.send(
+                          JSON.stringify({
+                            type: 'tool_result',
+                            toolCallId: data.toolCallId,
+                            result,
+                          })
+                        );
+                      }
+                    })
+                    .catch((err) => {
+                      log('error', 'Tool call error', { error: err });
+                      if (socketRef.current?.readyState === WebSocket.OPEN) {
+                        socketRef.current.send(
+                          JSON.stringify({
+                            type: 'tool_result',
+                            toolCallId: data.toolCallId,
+                            result: { error: String(err) },
+                          })
+                        );
+                      }
+                    });
+                }
                 break;
             }
           } catch (e) {
@@ -551,14 +719,14 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
 
         socket.onerror = () => {
           const errorMsg = 'Connection error';
+          log('error', 'WebSocket error');
           setError(errorMsg);
-          setIsConnecting(false);
+          setConnectionState('error');
           onError?.(errorMsg);
         };
 
         socket.onclose = (event) => {
-          setIsConnected(false);
-          setIsConnecting(false);
+          log('info', 'WebSocket closed', { code: event.code, reason: event.reason });
           onConnectionChange?.(false);
           stopFrameCapture();
           stopMicCapture();
@@ -567,28 +735,42 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
           if (event.code !== 1000 && reconnectAttemptsRef.current < maxReconnectAttempts) {
             reconnectAttemptsRef.current++;
             const delay = Math.min(
-              reconnectDelayRef.current * Math.pow(2, reconnectAttemptsRef.current - 1),
-              10000
+              reconnectDelayRef.current * Math.pow(reconnectBackoffFactor, reconnectAttemptsRef.current - 1),
+              maxReconnectDelay
             );
+            log('info', 'Scheduling reconnect', {
+              attempt: reconnectAttemptsRef.current,
+              maxAttempts: maxReconnectAttempts,
+              delayMs: delay,
+            });
+            setConnectionState('reconnecting');
             setTimeout(() => {
               connect(videoRef.current ?? undefined).catch(() => {
                 if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
                   const errorMsg = 'Failed to reconnect. Please refresh the page.';
+                  log('error', 'Max reconnect attempts reached');
                   setError(errorMsg);
+                  setConnectionState('error');
                   onError?.(errorMsg);
                 }
               });
             }, delay);
           } else if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
             const errorMsg = 'Connection lost. Please refresh the page to reconnect.';
+            log('error', 'Connection lost after max attempts');
             setError(errorMsg);
+            setConnectionState('error');
             onError?.(errorMsg);
+          } else {
+            // Normal close (code 1000)
+            setConnectionState('disconnected');
           }
         };
       } catch (err) {
         const errorMsg = 'Failed to connect to AI';
+        log('error', 'Connection failed', { error: err });
         setError(errorMsg);
-        setIsConnecting(false);
+        setConnectionState('error');
         onError?.(errorMsg);
       }
     },
@@ -605,11 +787,18 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
       transcriptDebounceMs,
       onConnectionChange,
       onError,
+      log,
+      tools,
+      onToolCall,
+      maxReconnectAttempts,
+      maxReconnectDelay,
+      reconnectBackoffFactor,
     ]
   );
 
   /** Disconnect from the proxy and clean up all resources */
   const disconnect = useCallback(() => {
+    log('info', 'Disconnecting');
     stopFrameCapture();
     stopMicCapture();
 
@@ -622,6 +811,14 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
       playbackContextRef.current.close();
       playbackContextRef.current = null;
     }
+
+    // Clean up VAD
+    if (vadAudioContextRef.current) {
+      vadAudioContextRef.current.close();
+      vadAudioContextRef.current = null;
+    }
+    vadRef.current = null;
+    setIsUserSpeaking(false);
 
     // Clear transcript timeouts and flush buffers
     if (inputTranscriptTimeoutRef.current) {
@@ -641,25 +838,45 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
       socketRef.current.close(1000, 'User disconnected');
       socketRef.current = null;
     }
-    setIsConnected(false);
-    setIsConnecting(false);
+    setConnectionState('idle');
     setTranscripts([]);
     reconnectAttemptsRef.current = 0;
-    reconnectDelayRef.current = 1000;
+    reconnectDelayRef.current = initialReconnectDelay;
     onConnectionChange?.(false);
-  }, [stopFrameCapture, stopMicCapture, onConnectionChange]);
+  }, [stopFrameCapture, stopMicCapture, onConnectionChange, log, initialReconnectDelay]);
 
   /** Send a text message to Gemini */
-  const sendText = useCallback((text: string) => {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(
-        JSON.stringify({
-          type: 'text',
-          text,
-        })
-      );
-    }
-  }, []);
+  const sendText = useCallback(
+    (text: string) => {
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        log('verbose', 'Sending text message', { text });
+        socketRef.current.send(
+          JSON.stringify({
+            type: 'text',
+            text,
+          })
+        );
+      }
+    },
+    [log]
+  );
+
+  /** Send a tool result back to Gemini */
+  const sendToolResult = useCallback(
+    (toolCallId: string, result: unknown) => {
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        log('info', 'Sending tool result', { toolCallId, result });
+        socketRef.current.send(
+          JSON.stringify({
+            type: 'tool_result',
+            toolCallId,
+            result,
+          })
+        );
+      }
+    },
+    [log]
+  );
 
   /** Set microphone muted state */
   const setMutedState = useCallback((muted: boolean) => {
@@ -681,15 +898,18 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   return {
     isConnected,
     isConnecting,
+    connectionState,
     error,
     transcripts,
     isSpeaking,
     isMuted,
     streamingText,
     streamingUserText,
+    isUserSpeaking,
     connect,
     disconnect,
     sendText,
+    sendToolResult,
     setMuted: setMutedState,
     clearTranscripts,
   };

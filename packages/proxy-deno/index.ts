@@ -82,6 +82,8 @@ serve(async (req) => {
 
     let geminiSocket: WebSocket | null = null;
     let isSetupComplete = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let pendingTools: any[] | null = null;
 
     clientSocket.onopen = () => {
       console.log("Client connected, establishing Gemini connection...");
@@ -94,36 +96,50 @@ serve(async (req) => {
       geminiSocket.onopen = () => {
         console.log("Connected to Gemini Live API");
 
-        // Send setup message with native audio model
-        const setupMessage = {
-          setup: {
-            model: "models/gemini-2.5-flash-native-audio-preview-12-2025",
-            generationConfig: {
-              responseModalities: ["AUDIO"],
-              mediaResolution: "MEDIA_RESOLUTION_MEDIUM",
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: {
-                    voiceName: voiceName,
-                  },
+        // Build setup message with native audio model
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const setupConfig: any = {
+          model: "models/gemini-2.5-flash-native-audio-preview-12-2025",
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            mediaResolution: "MEDIA_RESOLUTION_MEDIUM",
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: voiceName,
                 },
               },
             },
-            systemInstruction: {
-              parts: [{ text: systemInstruction }],
-            },
-            // Enable transcription for both input and output
-            inputAudioTranscription: {},
-            outputAudioTranscription: {},
-            // Enable session resumption for reconnections
-            sessionResumption: {},
-            // Enable context window compression for unlimited session time
-            contextWindowCompression: {
-              slidingWindow: {},
-            },
+          },
+          systemInstruction: {
+            parts: [{ text: systemInstruction }],
+          },
+          // Enable transcription for both input and output
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
+          // Enable session resumption for reconnections
+          sessionResumption: {},
+          // Enable context window compression for unlimited session time
+          contextWindowCompression: {
+            slidingWindow: {},
           },
         };
 
+        // Add tools if provided
+        if (pendingTools && pendingTools.length > 0) {
+          console.log("Configuring tools:", pendingTools.map((t) => t.name));
+          setupConfig.tools = [
+            {
+              functionDeclarations: pendingTools.map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.parameters || { type: "object", properties: {} },
+              })),
+            },
+          ];
+        }
+
+        const setupMessage = { setup: setupConfig };
         geminiSocket!.send(JSON.stringify(setupMessage));
       };
 
@@ -236,6 +252,22 @@ serve(async (req) => {
               clientSocket.send(JSON.stringify({ type: "turn_complete" }));
             }
           }
+
+          // Handle tool/function calls
+          if (data.toolCall) {
+            const functionCalls = data.toolCall.functionCalls || [];
+            for (const fc of functionCalls) {
+              console.log("Tool call:", fc.name);
+              clientSocket.send(
+                JSON.stringify({
+                  type: "tool_call",
+                  toolCallId: fc.id,
+                  toolName: fc.name,
+                  args: fc.args || {},
+                })
+              );
+            }
+          }
         } catch (error) {
           console.error("Error parsing Gemini response:", error);
         }
@@ -265,16 +297,23 @@ serve(async (req) => {
     };
 
     clientSocket.onmessage = (event) => {
-      if (!geminiSocket || geminiSocket.readyState !== WebSocket.OPEN) {
-        return;
-      }
-
-      if (!isSetupComplete) {
-        return;
-      }
-
       try {
         const data = JSON.parse(event.data);
+
+        // Handle setup_tools before Gemini connection is established
+        if (data.type === "setup_tools") {
+          console.log("Received tool definitions:", data.tools?.length || 0);
+          pendingTools = data.tools || [];
+          return;
+        }
+
+        if (!geminiSocket || geminiSocket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+
+        if (!isSetupComplete) {
+          return;
+        }
 
         if (data.type === "frame") {
           // Send image frame to Gemini (for screen sharing)
@@ -316,6 +355,21 @@ serve(async (req) => {
                   },
                 ],
                 turnComplete: true,
+              },
+            })
+          );
+        } else if (data.type === "tool_result") {
+          // Send tool result back to Gemini
+          console.log("Sending tool result for:", data.toolCallId);
+          geminiSocket.send(
+            JSON.stringify({
+              toolResponse: {
+                functionResponses: [
+                  {
+                    id: data.toolCallId,
+                    response: data.result,
+                  },
+                ],
               },
             })
           );
