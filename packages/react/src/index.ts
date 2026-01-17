@@ -20,3 +20,14 @@ export {
   getVideoMimeType,
   getRecommendedAudioConstraints,
 } from './browserCapabilities';
+
+// Captured Surface Control (Chrome 124+ scroll/zoom control for captured screens)
+export {
+  useCapturedSurfaceControl,
+  isCapturedSurfaceControlSupported,
+} from './useCapturedSurfaceControl';
+export type {
+  CapturedSurfaceControlState,
+  ScrollByOptions,
+  UseCapturedSurfaceControlReturn,
+} from './useCapturedSurfaceControl';
