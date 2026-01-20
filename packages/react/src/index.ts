@@ -1,5 +1,7 @@
 export { useGeminiLive } from './useGeminiLive';
+export { useScreenRecording } from './useScreenRecording';
 export type {
+  // Gemini Live types
   Transcript,
   UseGeminiLiveOptions,
   UseGeminiLiveReturn,
@@ -9,6 +11,12 @@ export type {
   ToolDefinition,
   ToolCall,
   ToolCallHandler,
+  // Screen Recording types
+  UseScreenRecordingOptions,
+  UseScreenRecordingReturn,
+  RecordingState,
+  RecordingResult,
+  TimestampedScreenshot,
 } from './types';
 
 // Browser capability detection utilities

@@ -1,13 +1,23 @@
-import { useRef, useState } from 'react';
-import { useGeminiLive } from 'gemini-live-react';
+import { useState } from 'react';
+import {
+  useGeminiLive,
+  useScreenRecording,
+  shouldUseCameraMode,
+} from 'gemini-live-react';
 
 // Replace with your proxy URL
 const PROXY_URL = 'wss://your-project.supabase.co/functions/v1/gemini-live-proxy';
 
 export default function App() {
-  const videoRef = useRef<HTMLVideoElement>(null);
   const [proxyUrl, setProxyUrl] = useState(PROXY_URL);
-  const [isSharing, setIsSharing] = useState(false);
+
+  const {
+    state: recordingState,
+    startRecording,
+    stopRecording,
+    getVideoElement,
+    getStream,
+  } = useScreenRecording();
 
   const {
     connect,
@@ -24,47 +34,36 @@ export default function App() {
     onError: (err) => console.error('Gemini error:', err),
   });
 
-  const startScreenShare = async () => {
+  const handleStart = async () => {
     try {
-      // Request screen capture
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: false,
-      });
+      // Use camera on mobile devices without screen capture support
+      const useCameraMode = shouldUseCameraMode();
+      await startRecording(useCameraMode);
 
-      // Handle stream ending (user clicks "Stop sharing")
-      stream.getVideoTracks()[0].onended = () => {
-        setIsSharing(false);
-        disconnect();
-      };
-
-      // Attach to video element
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+      // Connect the video element to Gemini for live analysis
+      const videoEl = getVideoElement();
+      if (videoEl) {
+        await connect(videoEl);
       }
-
-      setIsSharing(true);
-
-      // Connect with video element - frames will be captured at 1 FPS
-      await connect(videoRef.current!);
     } catch (err) {
-      console.error('Failed to start screen share:', err);
+      console.error('Failed to start:', err);
     }
   };
 
-  const stopScreenShare = () => {
-    if (videoRef.current?.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach((track) => track.stop());
-      videoRef.current.srcObject = null;
-    }
-    setIsSharing(false);
+  const handleStop = async () => {
     disconnect();
+    const result = await stopRecording();
+    if (result) {
+      console.log('Recording stopped:', {
+        videoSize: result.videoBlob.size,
+        audioSize: result.audioBlob?.size,
+        screenshots: result.screenshots.length,
+      });
+    }
   };
+
+  // Get the stream for video preview
+  const stream = getStream();
 
   return (
     <div style={styles.container}>
@@ -81,12 +80,17 @@ export default function App() {
         {/* Left: Video preview */}
         <div style={styles.videoSection}>
           <div style={styles.videoContainer}>
-            {isSharing ? (
+            {recordingState.isRecording && stream ? (
               <video
-                ref={videoRef}
                 style={styles.video}
                 muted
                 playsInline
+                autoPlay
+                ref={(el) => {
+                  if (el && el.srcObject !== stream) {
+                    el.srcObject = stream;
+                  }
+                }}
               />
             ) : (
               <div style={styles.placeholder}>
@@ -118,7 +122,7 @@ export default function App() {
                   style={styles.input}
                 />
                 <button
-                  onClick={startScreenShare}
+                  onClick={handleStart}
                   style={{ ...styles.button, ...styles.buttonPrimary }}
                   disabled={isConnecting}
                 >
@@ -137,7 +141,7 @@ export default function App() {
                   {isMuted ? 'Unmute' : 'Mute'}
                 </button>
                 <button
-                  onClick={stopScreenShare}
+                  onClick={handleStop}
                   style={{ ...styles.button, ...styles.buttonDanger }}
                 >
                   Stop Sharing
@@ -157,6 +161,12 @@ export default function App() {
               />
               {isConnected ? 'Connected' : 'Disconnected'}
             </span>
+            {recordingState.isRecording && (
+              <span style={styles.statusItem}>
+                <span style={{ ...styles.dot, backgroundColor: '#ef4444' }} />
+                {recordingState.duration}s
+              </span>
+            )}
             {isSpeaking && (
               <span style={styles.statusItem}>
                 <span style={{ ...styles.dot, backgroundColor: '#3b82f6' }} />
@@ -170,7 +180,9 @@ export default function App() {
         <div style={styles.transcriptSection}>
           <h2 style={styles.sectionTitle}>Conversation</h2>
 
-          {error && <div style={styles.error}>{error}</div>}
+          {(error || recordingState.error) && (
+            <div style={styles.error}>{error || recordingState.error}</div>
+          )}
 
           <div style={styles.transcriptList}>
             {transcripts.length === 0 ? (

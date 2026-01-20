@@ -1,3 +1,119 @@
+// =============================================================================
+// Screen Recording Types
+// =============================================================================
+
+/**
+ * A screenshot captured during recording with timestamp metadata
+ */
+export interface TimestampedScreenshot {
+  /** Base64-encoded JPEG image data */
+  image: string;
+  /** Seconds from recording start */
+  timestamp: number;
+  /** Formatted time string (e.g., "1:30") */
+  formattedTime: string;
+}
+
+/**
+ * Current state of the screen recording
+ */
+export interface RecordingState {
+  /** Whether recording is currently active */
+  isRecording: boolean;
+  /** Whether recording is paused */
+  isPaused: boolean;
+  /** Recording duration in seconds */
+  duration: number;
+  /** Error message if recording failed */
+  error: string | null;
+}
+
+/**
+ * Result returned when stopping a recording
+ */
+export interface RecordingResult {
+  /** Recorded video as a Blob */
+  videoBlob: Blob;
+  /** All captured screenshots during the recording */
+  screenshots: TimestampedScreenshot[];
+  /** Separate microphone audio as a Blob (if available) */
+  audioBlob?: Blob;
+}
+
+/**
+ * Configuration options for useScreenRecording hook
+ */
+export interface UseScreenRecordingOptions {
+  /**
+   * Interval between automatic screenshot captures (ms)
+   * @default 2000
+   */
+  screenshotInterval?: number;
+
+  /**
+   * Maximum number of screenshots to keep (rolling window)
+   * @default 30
+   */
+  maxScreenshots?: number;
+
+  /**
+   * JPEG quality for screenshots (0-1)
+   * @default 0.8
+   */
+  screenshotQuality?: number;
+
+  /**
+   * Custom constraints for microphone audio capture
+   * @default { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+   */
+  audioConstraints?: MediaTrackConstraints;
+}
+
+/**
+ * Return value from useScreenRecording hook
+ */
+export interface UseScreenRecordingReturn {
+  /** Current recording state */
+  state: RecordingState;
+
+  /**
+   * Start screen or camera recording
+   * @param useCameraMode - Use camera instead of screen capture (for mobile fallback)
+   */
+  startRecording: (useCameraMode?: boolean) => Promise<void>;
+
+  /**
+   * Stop recording and return the results
+   * @returns Recording result with video, audio, and screenshots
+   */
+  stopRecording: () => Promise<RecordingResult | null>;
+
+  /** Pause the current recording */
+  pauseRecording: () => void;
+
+  /** Resume a paused recording */
+  resumeRecording: () => void;
+
+  /**
+   * Get the video element used for capture
+   * Pass this to useGeminiLive's connect() for live streaming
+   */
+  getVideoElement: () => HTMLVideoElement | null;
+
+  /** Get the current media stream */
+  getStream: () => MediaStream | null;
+
+  /** Get the most recent automatically captured screenshot */
+  getLatestScreenshot: () => string | null;
+
+  /** Capture a screenshot immediately (on-demand) */
+  captureScreenshotNow: () => string | null;
+}
+
+// =============================================================================
+// Gemini Live Types
+// =============================================================================
+
 /**
  * Debug log levels for categorizing log messages
  */

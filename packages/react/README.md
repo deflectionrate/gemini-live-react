@@ -96,9 +96,105 @@ interface Transcript {
 }
 ```
 
-## Screen Sharing
+## Screen Recording
 
-To enable screen sharing, pass a video element to `connect()`:
+For apps that need screen/camera capture with recordings and screenshots, use the `useScreenRecording` hook:
+
+```tsx
+import { useGeminiLive, useScreenRecording, shouldUseCameraMode } from 'gemini-live-react';
+
+function ScreenShareApp() {
+  const {
+    state,
+    startRecording,
+    stopRecording,
+    getVideoElement,
+  } = useScreenRecording({
+    screenshotInterval: 2000,  // Capture every 2 seconds
+    maxScreenshots: 30,        // Keep last 30 screenshots
+  });
+
+  const {
+    connect,
+    disconnect,
+    transcripts,
+    isConnected,
+  } = useGeminiLive({ proxyUrl: 'wss://your-proxy.com' });
+
+  const handleStart = async () => {
+    // Use camera on mobile devices that don't support screen capture
+    const useCameraMode = shouldUseCameraMode();
+    await startRecording(useCameraMode);
+
+    // Get the video element and connect to Gemini
+    const videoEl = getVideoElement();
+    if (videoEl) {
+      await connect(videoEl);
+    }
+  };
+
+  const handleStop = async () => {
+    disconnect();
+    const result = await stopRecording();
+    // result.videoBlob - recorded video
+    // result.audioBlob - separate microphone audio
+    // result.screenshots - array of timestamped screenshots
+  };
+
+  return (
+    <div>
+      <button onClick={state.isRecording ? handleStop : handleStart}>
+        {state.isRecording ? 'Stop' : 'Start'} Recording
+      </button>
+      <div>Duration: {state.duration}s</div>
+    </div>
+  );
+}
+```
+
+### `useScreenRecording(options?)`
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `screenshotInterval` | `number` | `2000` | Interval between screenshot captures (ms) |
+| `maxScreenshots` | `number` | `30` | Maximum screenshots to keep (rolling window) |
+| `screenshotQuality` | `number` | `0.8` | JPEG quality for screenshots (0-1) |
+| `audioConstraints` | `MediaTrackConstraints` | - | Custom mic audio constraints |
+
+#### Return Value
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `state` | `RecordingState` | `{ isRecording, isPaused, duration, error }` |
+| `startRecording` | `(useCameraMode?: boolean) => Promise<void>` | Start recording |
+| `stopRecording` | `() => Promise<RecordingResult \| null>` | Stop and get results |
+| `pauseRecording` | `() => void` | Pause recording |
+| `resumeRecording` | `() => void` | Resume recording |
+| `getVideoElement` | `() => HTMLVideoElement \| null` | Get video element for `connect()` |
+| `getStream` | `() => MediaStream \| null` | Get media stream |
+| `getLatestScreenshot` | `() => string \| null` | Get latest auto-captured screenshot |
+| `captureScreenshotNow` | `() => string \| null` | Capture screenshot immediately |
+
+### Mobile/iOS Support
+
+Screen capture isn't available on iOS and some mobile browsers. Use the `shouldUseCameraMode()` helper to fall back to camera capture:
+
+```tsx
+import { shouldUseCameraMode } from 'gemini-live-react';
+
+// Returns true on mobile devices without screen capture support
+if (shouldUseCameraMode()) {
+  await startRecording(true); // Uses rear camera
+} else {
+  await startRecording();     // Uses screen capture
+}
+```
+
+## Manual Screen Sharing
+
+For simple screen sharing without recording features, you can set up the stream manually:
 
 ```tsx
 function ScreenShareChat() {
