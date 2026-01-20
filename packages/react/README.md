@@ -9,6 +9,8 @@ React hook for real-time bidirectional voice communication with Google Gemini Li
 - **Screen sharing support** - Optional video frame streaming for visual context
 - **Live transcription** - Both user and AI speech transcribed in real-time
 - **Auto-reconnection** - Exponential backoff reconnection on connection loss
+- **Speaker mute control** - Mute AI audio output independently from microphone
+- **Connection metrics** - Track audio chunks, messages, reconnects, and uptime
 - **TypeScript** - Full type definitions included
 
 ## Installation
@@ -75,15 +77,20 @@ function VoiceChat() {
 |----------|------|-------------|
 | `isConnected` | `boolean` | Currently connected to proxy |
 | `isConnecting` | `boolean` | Attempting to connect |
+| `connectionState` | `ConnectionState` | Granular connection state |
 | `isSpeaking` | `boolean` | AI audio is playing |
 | `isMuted` | `boolean` | Microphone is muted |
+| `isSpeakerMuted` | `boolean` | AI audio output is muted |
 | `error` | `string \| null` | Current error message |
 | `transcripts` | `Transcript[]` | All transcript entries |
 | `connect` | `(video?: HTMLVideoElement) => Promise<void>` | Connect to proxy |
 | `disconnect` | `() => void` | Disconnect and cleanup |
+| `retry` | `() => Promise<void>` | Retry connection after error |
 | `sendText` | `(text: string) => void` | Send text message |
-| `setMuted` | `(muted: boolean) => void` | Set mute state |
+| `setMuted` | `(muted: boolean) => void` | Set microphone mute state |
+| `setSpeakerMuted` | `(muted: boolean) => void` | Set speaker mute state |
 | `clearTranscripts` | `() => void` | Clear transcript history |
+| `getMetrics` | `() => ConnectionMetrics` | Get connection quality metrics |
 
 ### Types
 
@@ -93,6 +100,22 @@ interface Transcript {
   role: 'user' | 'assistant';
   text: string;
   timestamp: Date;
+}
+
+type ConnectionState =
+  | 'idle'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'error'
+  | 'disconnected';
+
+interface ConnectionMetrics {
+  audioChunksReceived: number;
+  messagesReceived: number;
+  reconnectCount: number;
+  lastConnectedAt: number | null;
+  totalConnectedTime: number;
 }
 ```
 

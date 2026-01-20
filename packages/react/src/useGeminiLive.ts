@@ -5,6 +5,7 @@ import type {
   UseGeminiLiveReturn,
   ProxyMessage,
   ConnectionState,
+  ConnectionMetrics,
   DebugLevel,
   DebugCallback,
 } from './types';
@@ -91,6 +92,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const [streamingUserText, setStreamingUserText] = useState<string | null>(null);
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
@@ -120,6 +122,15 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   const audioWorkletRef = useRef<AudioWorkletNode | null>(null);
   const audioBufferRef = useRef<Float32Array[]>([]);
   const isPlayingRef = useRef(false);
+
+  // Connection quality metrics
+  const metricsRef = useRef<ConnectionMetrics>({
+    audioChunksReceived: 0,
+    messagesReceived: 0,
+    reconnectCount: 0,
+    lastConnectedAt: null,
+    totalConnectedTime: 0,
+  });
 
   // Calculate min buffer samples based on minBufferMs (at 24kHz source rate)
   const minBufferSamples = Math.floor((minBufferMs / 1000) * 24000);
@@ -218,6 +229,12 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
    */
   const playAudio = useCallback(
     async (base64Data: string, mimeType: string) => {
+      // If speaker is muted, discard audio
+      if (isSpeakerMuted) {
+        audioBufferRef.current = [];
+        return;
+      }
+
       const sourceSampleRate = parseSampleRate(mimeType);
 
       // Create AudioContext with browser's default sample rate (don't force 24kHz)
@@ -283,7 +300,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
         console.error('Error playing audio:', err);
       }
     },
-    [parseSampleRate, resampleAudio, playBufferedAudio, minBufferSamples]
+    [parseSampleRate, resampleAudio, playBufferedAudio, minBufferSamples, isSpeakerMuted]
   );
 
   /**
@@ -573,12 +590,14 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
         socket.onmessage = (event) => {
           try {
             const data: ProxyMessage = JSON.parse(event.data);
+            metricsRef.current.messagesReceived++;
 
             log('verbose', 'Received message', { type: data.type });
 
             switch (data.type) {
               case 'setup_complete':
                 log('info', 'Setup complete, starting audio capture');
+                metricsRef.current.lastConnectedAt = Date.now();
                 setConnectionState('connected');
                 onConnectionChange?.(true);
                 if (videoRef.current) {
@@ -599,6 +618,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
 
               case 'audio':
                 if (data.data && data.mimeType) {
+                  metricsRef.current.audioChunksReceived++;
                   playAudio(data.data, data.mimeType);
                 }
                 break;
@@ -734,6 +754,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
           // Attempt reconnect if unexpected close
           if (event.code !== 1000 && reconnectAttemptsRef.current < maxReconnectAttempts) {
             reconnectAttemptsRef.current++;
+            metricsRef.current.reconnectCount++;
             const delay = Math.min(
               reconnectDelayRef.current * Math.pow(reconnectBackoffFactor, reconnectAttemptsRef.current - 1),
               maxReconnectDelay
@@ -799,6 +820,14 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
   /** Disconnect from the proxy and clean up all resources */
   const disconnect = useCallback(() => {
     log('info', 'Disconnecting');
+
+    // Update total connected time
+    if (metricsRef.current.lastConnectedAt !== null) {
+      metricsRef.current.totalConnectedTime +=
+        Date.now() - metricsRef.current.lastConnectedAt;
+      metricsRef.current.lastConnectedAt = null;
+    }
+
     stopFrameCapture();
     stopMicCapture();
 
@@ -845,6 +874,16 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
     onConnectionChange?.(false);
   }, [stopFrameCapture, stopMicCapture, onConnectionChange, log, initialReconnectDelay]);
 
+  /** Manually retry connection after error or disconnect */
+  const retry = useCallback(async () => {
+    if (connectionState === 'error' || connectionState === 'disconnected') {
+      reconnectAttemptsRef.current = 0;
+      reconnectDelayRef.current = initialReconnectDelay;
+      setError(null);
+      await connect(videoRef.current ?? undefined);
+    }
+  }, [connectionState, connect, initialReconnectDelay]);
+
   /** Send a text message to Gemini */
   const sendText = useCallback(
     (text: string) => {
@@ -883,9 +922,22 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
     setIsMuted(muted);
   }, []);
 
+  /** Set speaker muted state */
+  const setSpeakerMutedState = useCallback((muted: boolean) => {
+    setIsSpeakerMuted(muted);
+    if (muted) {
+      audioBufferRef.current = []; // Clear any pending audio
+    }
+  }, []);
+
   /** Clear all transcript entries */
   const clearTranscripts = useCallback(() => {
     setTranscripts([]);
+  }, []);
+
+  /** Get connection quality metrics */
+  const getMetrics = useCallback((): ConnectionMetrics => {
+    return { ...metricsRef.current };
   }, []);
 
   // Cleanup on unmount
@@ -903,14 +955,18 @@ export function useGeminiLive(options: UseGeminiLiveOptions): UseGeminiLiveRetur
     transcripts,
     isSpeaking,
     isMuted,
+    isSpeakerMuted,
     streamingText,
     streamingUserText,
     isUserSpeaking,
     connect,
     disconnect,
+    retry,
     sendText,
     sendToolResult,
     setMuted: setMutedState,
+    setSpeakerMuted: setSpeakerMutedState,
     clearTranscripts,
+    getMetrics,
   };
 }

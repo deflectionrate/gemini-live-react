@@ -291,6 +291,22 @@ export type ConnectionState =
   | 'disconnected';
 
 /**
+ * Connection quality metrics
+ */
+export interface ConnectionMetrics {
+  /** Number of audio chunks received from AI */
+  audioChunksReceived: number;
+  /** Total number of WebSocket messages received */
+  messagesReceived: number;
+  /** Number of reconnection attempts made */
+  reconnectCount: number;
+  /** Timestamp when last connected (null if not connected) */
+  lastConnectedAt: number | null;
+  /** Total time spent connected in milliseconds */
+  totalConnectedTime: number;
+}
+
+/**
  * Return value from useGeminiLive hook
  */
 export interface UseGeminiLiveReturn {
@@ -311,6 +327,9 @@ export interface UseGeminiLiveReturn {
 
   /** Whether microphone input is muted */
   isMuted: boolean;
+
+  /** Whether AI audio output is muted */
+  isSpeakerMuted: boolean;
 
   /** Current error message, if any */
   error: string | null;
@@ -339,6 +358,9 @@ export interface UseGeminiLiveReturn {
   /** Disconnect from the proxy and clean up resources */
   disconnect: () => void;
 
+  /** Manually retry connection after error or disconnect */
+  retry: () => Promise<void>;
+
   /**
    * Send a text message to Gemini (in addition to voice)
    */
@@ -346,6 +368,9 @@ export interface UseGeminiLiveReturn {
 
   /** Set microphone muted state */
   setMuted: (muted: boolean) => void;
+
+  /** Set speaker muted state (mutes AI audio output) */
+  setSpeakerMuted: (muted: boolean) => void;
 
   /** Clear all transcript entries */
   clearTranscripts: () => void;
@@ -362,6 +387,9 @@ export interface UseGeminiLiveReturn {
    * Only available when vad: true
    */
   isUserSpeaking: boolean;
+
+  /** Get connection quality metrics */
+  getMetrics: () => ConnectionMetrics;
 }
 
 /**
